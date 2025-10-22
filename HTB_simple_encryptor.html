@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Encryptor Writeup</title>
+    <style>
+        body {
+            font-family: "Fira Code", monospace;
+            background-color: #1e1e1e;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 2rem;
+            line-height: 1.6;
+        }
+        h1, h2, h3 {
+            color: #ffd479;
+        }
+        code, pre {
+            background: #2d2d2d;
+            color: #a6e22e;
+            padding: 0.5rem;
+            border-radius: 8px;
+            display: block;
+            overflow-x: auto;
+        }
+        pre {
+            border-left: 3px solid #66d9ef;
+        }
+        .note {
+            background-color: #333;
+            border-left: 4px solid #f92672;
+            padding: 10px;
+            margin: 1em 0;
+        }
+        img {
+            display: block;
+            margin: 20px auto;
+            border-radius: 10px;
+            max-width: 90%;
+        }
+        hr {
+            border: 0;
+            border-top: 1px solid #444;
+            margin: 2em 0;
+        }
+    </style>
+</head>
+<body>
+
+<h1>🧩 Task: Simple Encryptor</h1>
+
+<h2>Step 1 — Initial Setup</h2>
+<p>I first downloaded and unzipped the provided archive:</p>
+
+<pre><code>cd rev_simpleencryptor
+ls
+</code></pre>
+
+<p>Output:</p>
+<pre><code>encrypt  flag.enc
+</code></pre>
+
+<p>Checking the file type:</p>
+<pre><code>file encrypt
+</code></pre>
+
+<p>Output:</p>
+<pre><code>ELF 64-bit LSB pie executable, x86-64, dynamically linked, not stripped
+</code></pre>
+
+<hr>
+
+<h2>Step 2 — Decompilation</h2>
+<p>I used <b>dogbolt.org</b> to decompile the ELF file.  
+After uploading the binary, I selected the <b>Ghidra</b> decompiler.  
+From the output, I cleaned up unnecessary parts and obtained the main logic.</p>
+
+<hr>
+
+<h2>Step 3 — Decompiled Code (from Ghidra)</h2>
+<pre><code>undefined8 main(void)
+{
+  ...
+}
+</code></pre>
+
+<hr>
+
+<h2>Step 4 — Readable Version</h2>
+<pre><code>#include "out.h"
+
+int main(void)
+{
+    int iVar1;
+    time_t t;
+    uint rnd;
+    uint shift;
+    long i;
+    FILE *flag;
+    size_t file_size;
+    void *buf;
+    FILE *flag_enc;
+
+    flag = fopen("flag", "rb");
+    fseek(flag, 0, 2);
+    file_size = ftell(flag);
+    fseek(flag, 0, 0);
+    buf = malloc(file_size);
+    fread(buf, file_size, 1, flag);
+    fclose(flag);
+
+    t = time(NULL);
+    rnd = (uint)t;
+    srand(rnd);
+
+    for (i = 0; i < (long)file_size; i++) {
+        iVar1 = rand();
+        *((char*)buf + i) ^= (char)iVar1;
+
+        shift = rand() & 7;
+        *((char*)buf + i) = (*((char*)buf + i) << shift) | (*((char*)buf + i) >> (8 - shift));
+    }
+
+    flag_enc = fopen("flag.enc", "wb");
+    fwrite(&rnd, 1, 4, flag_enc);
+    fwrite(buf, 1, file_size, flag_enc);
+    fclose(flag_enc);
+
+    return 0;
+}
+</code></pre>
+
+<hr>
+
+<h2>Step 5 — Analysis</h2>
+<p>The encryption process:</p>
+<ol>
+  <li>Reads the flag file.</li>
+  <li>Generates a random seed using the current timestamp (<code>time(NULL)</code>).</li>
+  <li>XORs each byte with a random value.</li>
+  <li>Bit-rotates the result by a random shift (<code>rand() & 7</code>).</li>
+  <li>Writes the seed (4 bytes) followed by the encrypted data to <code>flag.enc</code>.</li>
+</ol>
+
+<div class="note">
+    The vulnerability is that <code>time()</code> is predictable — it uses the current system time (UNIX timestamp).  
+    The seed is even stored in the first 4 bytes of the encrypted file, making decryption trivial.
+</div>
+
+<hr>
+
+<h2>Step 6 — Encrypted File</h2>
+<pre><code>hexdump flag.enc
+</code></pre>
+
+<p>Output:</p>
+<pre><code>0000000 355a 62b1 f500 123e bdc0 168d fdf0 9975
+0000010 effa 9a39 964b a121 1643 7123 fb65 4b27
+0000020
+</code></pre>
+
+<p>The first 4 bytes <code>B1 62 5A 35</code> represent the seed (in little-endian).</p>
+
+<hr>
+
+<h2>Step 7 — Decryption Code</h2>
+
+<pre><code>#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+int main() {
+    FILE *flag_enc = fopen("flag.enc", "rb");
+    
+    unsigned int seed;
+    fread(&seed, 1, 4, flag_enc);
+    printf("%x\n", seed);
+    srand(seed);
+    
+    fseek(flag_enc, 0, SEEK_END);
+    int size = ftell(flag_enc) - 4;
+    fseek(flag_enc, 4, SEEK_SET);
+    
+    char *enc = malloc(size);
+    char *dec = malloc(size);
+    
+    fread(enc, 1, size, flag_enc);
+    fclose(flag_enc);
+    
+    for (int i = 0; i &lt; size; i++) {
+        int r1 = rand();
+        int r2 = rand();
+        char shift = r2 & 7;
+
+        enc[i] = (enc[i] &gt;&gt; shift) | (enc[i] &lt;&lt; (8 - shift));
+        dec[i] = enc[i] ^ r1;
+    }
+    
+    for (int i = 0; i &lt; size; i++) { 
+        printf("%c", dec[i]);
+    }
+    printf("\n");
+    
+    free(enc);
+    free(dec);
+    return 0;
+}
+</code></pre>
+
+<p><b>⚙️ Note:</b> This code works correctly only on Linux, since the random generator implementation differs across systems.</p>
+
+<img src="photo.png" alt="Decryption Result Screenshot">
+
+<hr>
+
+<h2>Step 8 — Result</h2>
+<p>Running the program successfully decrypted and revealed the original flag 🎉</p>
+
+</body>
+</html>
